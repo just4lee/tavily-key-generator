@@ -8,7 +8,6 @@ import random
 import string
 import requests as std_requests
 from curl_cffi import requests
-from camoufox.sync_api import Camoufox
 
 from config import EMAIL_API_URL, EMAIL_API_TOKEN, EMAIL_DOMAIN
 
@@ -33,7 +32,7 @@ def _save_account(email, password, api_key=None):
 # ──────────────────────────────────────────────
 
 def create_email():
-    """生成随机邮箱地址（Cloudflare Email Workers）"""
+    """生成随机邮箱地址（无需预创建，自动接收）"""
     username = f"tavily-{rand_str()}"
     email = f"{username}@{EMAIL_DOMAIN}"
     password = f"Tv{rand_str(4)}{random.randint(10,99)}!"
@@ -43,7 +42,7 @@ def create_email():
 def get_verification_link(email, timeout=120):
     """等待验证邮件并提取验证链接"""
     print(f"⏳ 等待验证邮件（最多 {timeout} 秒）...", end="", flush=True)
-
+    
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
@@ -53,10 +52,10 @@ def get_verification_link(email, timeout=120):
                 headers={"Authorization": f"Bearer {EMAIL_API_TOKEN}"},
                 timeout=10
             )
-
+            
             if r.status_code == 200:
                 messages = r.json().get("messages", [])
-
+                
                 for msg in messages:
                     subject = msg.get("subject", "").lower()
                     if "verify" in subject or "tavily" in subject.lower():
@@ -64,91 +63,22 @@ def get_verification_link(email, timeout=120):
                         html = msg.get("html", "")
                         text = msg.get("text", "")
                         content = html + " " + text
-
-                        match = re.search(r'https://[^\s<>"]*verif[^\s<>"]*', content, re.IGNORECASE)
+                        
+                        match = re.search(r'https://[^\s<>"]+verify[^\s<>"]*', content, re.IGNORECASE)
                         if match:
                             verify_url = match.group(0)
                             print(f"\n✅ 找到验证链接")
                             return verify_url
-
+            
             time.sleep(5)
             print(".", end="", flush=True)
-
+            
         except Exception as e:
             print(f"\n⚠️  检查邮件出错: {e}")
             time.sleep(5)
-
+    
     print(f"\n❌ 验证邮件超时")
     return None
-
-# ──────────────────────────────────────────────
-# 浏览器验证
-# ──────────────────────────────────────────────
-
-def verify_with_browser(verify_url, session):
-    """使用 Camoufox 处理验证链接并获取 API Key"""
-    print("🌐 启动浏览器验证...")
-
-    try:
-        with Camoufox(headless=True) as browser:
-            page = browser.new_page()
-
-            # 转移 cookies
-            cookies = []
-            for name, value in session.cookies.items():
-                cookies.append({
-                    "name": name,
-                    "value": value,
-                    "domain": ".tavily.com",
-                    "path": "/"
-                })
-
-            # 同时添加 auth.tavily.com 的 cookies
-            for name, value in session.cookies.items():
-                cookies.append({
-                    "name": name,
-                    "value": value,
-                    "domain": ".auth.tavily.com",
-                    "path": "/"
-                })
-
-            page.context.add_cookies(cookies)
-
-            # 访问验证链接
-            page.goto(verify_url, wait_until="networkidle", timeout=60000)
-
-            # 等待跳转到主页
-            page.wait_for_url("**/app.tavily.com/**", timeout=60000)
-
-            # 等待页面完全加载
-            time.sleep(5)
-
-            # 访问主页获取 API Key
-            print("🔑 获取 API Key...")
-            page.goto("https://app.tavily.com/home", wait_until="networkidle")
-            time.sleep(3)
-
-            # 从页面 HTML 中提取 API Key
-            html = page.content()
-            # 匹配完整的 API Key 格式
-            api_key_matches = re.findall(r'tvly-[a-zA-Z0-9_-]{50,}', html)
-
-            if api_key_matches:
-                # 取最长的那个（排除占位符）
-                api_keys = [k for k in api_key_matches if k != "tvly-YOUR_API_KEY"]
-                if api_keys:
-                    api_key = max(api_keys, key=len)
-                    browser.close()
-                    print("✅ 浏览器验证完成")
-                    return api_key
-
-            browser.close()
-            print("⚠️  未找到 API Key")
-            return None
-
-    except Exception as e:
-        print(f"❌ 浏览器验证失败: {e}")
-        return None
 
 # ──────────────────────────────────────────────
 # Turnstile Solver
@@ -250,50 +180,32 @@ def register(email, password):
     if r2.status_code != 302:
         print("❌ 邮箱提交失败")
         return None
-
-    # 检查跳转位置
+    
+    # 检查是否跳转到注册页
     loc = r2.headers.get('Location', '')
-
-    # 处理 email-identifier/challenge 页面（新的验证步骤）
-    if '/email-identifier/challenge' in loc:
-        print("📧 邮箱验证中...")
-        # 这个页面会自动跳转，直接等待并跟随
-        if loc.startswith('/'):
-            loc = f"https://auth.tavily.com{loc}"
-
-        # 访问 challenge 页面，它应该会自动跳转到密码页或注册页
-        r_challenge = s.get(loc, headers=headers, allow_redirects=True)
-
-        # 检查最终到达哪里
-        if '/signup/password' in r_challenge.url or '/password' in r_challenge.url:
-            r3 = r_challenge
-        else:
-            print(f"❌ 验证后未到达密码页: {r_challenge.url}")
-            return None
-
-    elif '/login/password' in loc:
+    if '/login/password' in loc:
         # 已有账号，切换到注册
         r2_text = s.get(f"https://auth.tavily.com{loc}", headers=headers).text
         signup_m = re.search(r'href="(/u/signup/identifier[^"]*)"', r2_text)
         if not signup_m:
             print("❌ 无法切换到注册页")
             return None
-
+        
         signup_url = f"https://auth.tavily.com{signup_m.group(1)}"
         r2 = s.get(signup_url, headers=headers)
-
+        
         # 重新提取 state
         state_m2 = re.search(r'name="state"\s+value="([^"]+)"', r2.text)
         if state_m2:
             state = state_m2.group(1)
-
+        
         # 第二次 Turnstile
         print("🔐 Turnstile (2/2)...")
         token2 = solve_turnstile(signup_url)
         if not token2:
             return None
         print("✅ Turnstile OK")
-
+        
         # 提交注册
         r3 = s.post(
             signup_url,
@@ -308,7 +220,7 @@ def register(email, password):
         )
     else:
         r3 = s.get(f"https://auth.tavily.com{loc}", headers=headers, allow_redirects=True)
-
+    
     # 4. 到达密码页
     if '/password' not in r3.url:
         print(f"❌ 未到达密码页面: {r3.url}")
@@ -350,42 +262,30 @@ def register(email, password):
     callback = r4.headers.get('Location', '')
     if callback.startswith('/'):
         callback = f"https://auth.tavily.com{callback}"
-
+    
     r5 = s.get(callback, allow_redirects=True)
-
+    
+    # 7. 检查是否需要邮件验证
+    if 'verify' in r5.url.lower() or 'verification' in r5.text.lower():
+        print("📧 需要邮件验证")
+        verify_url = get_verification_link(email)
+        if not verify_url:
+            print("❌ 未收到验证邮件")
+            _save_account(email, password, None)
+            return None
+        
+        # 点击验证链接
+        print("🔗 点击验证链接...")
+        s.get(verify_url, allow_redirects=True)
+        time.sleep(2)
+        
+        # 重新访问主页
+        r5 = s.get("https://app.tavily.com/home", allow_redirects=True)
+    
     if 'app.tavily.com' not in r5.url:
         print("❌ 登录失败")
         return None
-
-    # 7. 检查账号状态
-    print("检查账号状态...")
-    r_account = s.get("https://app.tavily.com/api/account")
-
-    if r_account.status_code == 403:
-        account_data = r_account.json()
-        if account_data.get('code') == 'email_not_verified':
-            print("📧 需要邮件验证")
-            verify_url = get_verification_link(email, timeout=60)
-            if not verify_url:
-                print("❌ 未收到验证邮件")
-                _save_account(email, password, None)
-                return None
-
-            # 使用浏览器处理验证链接并直接获取 API Key
-            api_key = verify_with_browser(verify_url, s)
-            if not api_key:
-                print("❌ 验证失败或未获取到 API Key")
-                _save_account(email, password, None)
-                return None
-
-            # 保存账号
-            _save_account(email, password, api_key)
-            print(f"🎉 注册成功")
-            print(f"   邮箱: {email}")
-            print(f"   密码: {password}")
-            print(f"   Key : {api_key}")
-            return api_key
-
+    
     # 8. 获取 API Key
     api_key = get_api_key(s, email, password)
     
@@ -404,31 +304,63 @@ def register(email, password):
         return "SUCCESS_NO_KEY"
 
 def get_api_key(session, email, password):
-    """获取 API Key（不创建新的）"""
+    """获取 API Key"""
     time.sleep(3)
     session.get("https://app.tavily.com/home")
     time.sleep(2)
-
+    
     r_orgs = session.get("https://app.tavily.com/api/organizations")
     if r_orgs.status_code != 200:
         return None
-
+    
     orgs = r_orgs.json()
-
+    
+    # 如果没有组织，创建一个
     if not orgs:
-        print("⚠️  没有找到组织")
-        return None
-
+        r_create = session.post(
+            "https://app.tavily.com/api/organizations",
+            json={"name": "My Organization"},
+            headers={"Content-Type": "application/json"}
+        )
+        if r_create.status_code != 201:
+            return None
+        orgs = [r_create.json()]
+    
     org_id = orgs[0].get('id') or orgs[0].get('oid')
     if not org_id:
         return None
-
-    # 直接获取已有的 API Keys（不创建新的）
+    
+    # 获取 API Keys
     r_keys = session.get(f"https://app.tavily.com/api/keys?oid={org_id}")
     if r_keys.status_code == 200:
         keys = r_keys.json()
         if keys and len(keys) > 0:
             return keys[0].get('key')
-
-    print("⚠️  未找到 API Key")
+    
+    # 尝试创建 API Key
+    r_create_key = session.post(
+        f"https://app.tavily.com/api/keys?oid={org_id}",
+        json={},
+        headers={"Content-Type": "application/json"}
+    )
+    
+    if r_create_key.status_code in (200, 201):
+        key_data = r_create_key.json()
+        return key_data.get('key')
+    
+    # 如果还是失败，尝试邮件验证
+    print("📧 尝试邮件验证...")
+    verify_url = get_verification_link(email)
+    if verify_url:
+        print("🔗 点击验证链接...")
+        session.get(verify_url, allow_redirects=True)
+        time.sleep(3)
+        
+        # 重新尝试获取 API Key
+        r_keys2 = session.get(f"https://app.tavily.com/api/keys?oid={org_id}")
+        if r_keys2.status_code == 200:
+            keys2 = r_keys2.json()
+            if keys2 and len(keys2) > 0:
+                return keys2[0].get('key')
+    
     return None

@@ -191,7 +191,7 @@ def upload_key(email, api_key):
 # 注册流程
 # ──────────────────────────────────────────────
 
-def do_register(count, delay, upload, provider="cloudflare"):
+def do_register(count, delay, upload):
     success = 0
     failed = 0
 
@@ -205,8 +205,8 @@ def do_register(count, delay, upload, provider="cloudflare"):
         print(f"{'='*60}\n")
 
         try:
-            email, password, actual_provider = create_email(provider)
-            result = register(email, password, actual_provider)
+            email, password = create_email()
+            result = register(email, password)
 
             if result and result != "SUCCESS_NO_KEY":
                 success += 1
@@ -230,13 +230,6 @@ def do_register(count, delay, upload, provider="cloudflare"):
 # ──────────────────────────────────────────────
 
 def menu_register():
-    print(f"\n  邮箱服务商:")
-    print(f"    1. Cloudflare Email Workers (nashome.me)")
-    print(f"    2. DuckMail")
-    print(f"  选择 [1]: ", end="")
-    provider_input = input().strip()
-    provider = "duckmail" if provider_input == "2" else "cloudflare"
-
     print(f"\n  注册数量 (默认 {DEFAULT_COUNT}): ", end="")
     count_input = input().strip()
     count = int(count_input) if count_input.isdigit() else DEFAULT_COUNT
@@ -249,10 +242,9 @@ def menu_register():
     upload_input = input().strip().lower()
     upload = upload_input not in ("n", "no")
 
-    provider_name = "DuckMail" if provider == "duckmail" else "Cloudflare"
-    print(f"\n  邮箱: {provider_name}  数量: {count}  间隔: {delay}s  上传: {'是' if upload else '否'}")
+    print(f"\n  数量: {count}  间隔: {delay}s  上传: {'是' if upload else '否'}")
 
-    do_register(count, delay, upload, provider)
+    do_register(count, delay, upload)
 
 def main():
     # 启动 Solver
